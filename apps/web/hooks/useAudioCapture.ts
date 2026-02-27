@@ -29,7 +29,7 @@ export function useAudioCapture() {
     await cap.initialize();
 
     const det = new PitchDetector();
-    det.initialize(44100);
+    det.initialize(cap.getActualSampleRate());
     detector.current = det;
 
     rawNotes.current = [];
@@ -54,6 +54,7 @@ export function useAudioCapture() {
           frequency: result.frequency,
           confidence: result.confidence,
           timestamp,
+          rms: result.rms,
         });
       }
     });

@@ -3,6 +3,7 @@ export interface DetectedNote {
   frequency: number;
   confidence: number;
   timestamp: number;
+  rms: number; // 0-1 signal energy for velocity extraction
 }
 
 export interface QuantizedNote {
