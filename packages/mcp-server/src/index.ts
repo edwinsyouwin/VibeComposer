@@ -288,12 +288,218 @@ server.tool(
   },
 );
 
+// ── Tools: Music Video Generation ────────────────────────────────────
+
+server.tool(
+  'analyze_song_structure',
+  'Analyze an audio file (WAV/MP3) exported from Ableton to detect song structure: sections (intro, build, drop, breakdown, outro), beats, transitions, energy curve, and spectral profile. This is the first step in generating a music video.',
+  {
+    audioPath: z.string().describe('Path to the audio file (WAV or MP3)'),
+  },
+  async ({ audioPath }) => {
+    try {
+      const { spawn } = await import('node:child_process');
+      const { readFile, mkdtemp } = await import('node:fs/promises');
+      const { join, dirname } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const { tmpdir } = await import('node:os');
+
+      const currentFilename = fileURLToPath(import.meta.url);
+      const currentDirname = dirname(currentFilename);
+      const scriptPath = join(currentDirname, '..', '..', 'video-generator', 'scripts', 'analyze_audio.py');
+
+      const tempDir = await mkdtemp(join(tmpdir(), 'vibecomposer-'));
+      const outputPath = join(tempDir, 'analysis.json');
+
+      return new Promise<{ content: { type: 'text'; text: string }[] }>((resolve) => {
+        const proc = spawn('python3', [scriptPath, audioPath, '--output', outputPath], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let stderr = '';
+        proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+
+        proc.on('close', async (code: number | null) => {
+          if (code !== 0) {
+            resolve(textResult(`Analysis failed: ${stderr}`));
+            return;
+          }
+          try {
+            const raw = await readFile(outputPath, 'utf-8');
+            const analysis = JSON.parse(raw);
+            resolve(textResult(JSON.stringify({
+              summary: {
+                bpm: analysis.bpm,
+                key: analysis.key,
+                duration: `${Math.round(analysis.duration)}s`,
+                sections: analysis.sections.length,
+                transitions: analysis.transitions.length,
+                beats: analysis.beats.length,
+              },
+              sections: analysis.sections.map((s: Record<string, unknown>) => ({
+                id: s.id,
+                type: s.type,
+                startTime: `${s.startTime}s`,
+                endTime: `${s.endTime}s`,
+                duration: `${s.duration}s`,
+                bars: `${s.startBar}-${s.endBar}`,
+                energy: s.energy,
+              })),
+              transitions: analysis.transitions,
+              spectralProfile: analysis.spectralProfile,
+              _fullAnalysis: analysis,
+            }, null, 2)));
+          } catch (err) {
+            resolve(textResult(`Failed to parse analysis: ${err}`));
+          }
+        });
+
+        proc.on('error', (err: Error) => {
+          resolve(textResult(`Cannot run analysis: ${err.message}. Ensure Python 3 and librosa are installed.`));
+        });
+      });
+    } catch (err) {
+      return textResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  'plan_music_video',
+  'Plan a music video by generating visual prompts for each song section. Takes the analysis from analyze_song_structure and creates a complete video generation plan with prompts, styles, and transitions for each segment.',
+  {
+    analysisJson: z.string().describe('JSON string of the song analysis (from analyze_song_structure)'),
+    narrativeTheme: z.string().describe('Overall narrative/visual theme for the video, e.g. "cyberpunk city at night", "desert journey", "abstract liquid forms"'),
+    genre: z.string().optional().describe('EDM subgenre for style presets: melodic-techno, afro-tech, jersey-club, space-bass, pop-edm'),
+  },
+  async ({ analysisJson, narrativeTheme, genre }) => {
+    try {
+      const analysis = JSON.parse(analysisJson);
+
+      const SECTION_STYLES: Record<string, { aesthetic: string; cameraStyle: string; motionIntensity: number; keywords: string[] }> = {
+        intro: { aesthetic: 'ethereal establishing shot', cameraStyle: 'slow dolly in', motionIntensity: 0.2, keywords: ['atmospheric', 'ambient', 'wide angle', 'cinematic fog'] },
+        verse: { aesthetic: 'intimate narrative moment', cameraStyle: 'steady medium shot', motionIntensity: 0.4, keywords: ['storytelling', 'character focus', 'natural lighting'] },
+        chorus: { aesthetic: 'vibrant high-energy spectacle', cameraStyle: 'dynamic tracking shot', motionIntensity: 0.8, keywords: ['vivid colors', 'dramatic lighting', 'wide angle'] },
+        build: { aesthetic: 'accelerating tension', cameraStyle: 'push in with increasing speed', motionIntensity: 0.6, keywords: ['rising energy', 'particle effects', 'light rays', 'anticipation'] },
+        drop: { aesthetic: 'explosive maximum energy', cameraStyle: 'rapid cuts and camera shake', motionIntensity: 1.0, keywords: ['intense', 'strobe lighting', 'bass-heavy visuals', 'impact'] },
+        breakdown: { aesthetic: 'spacious atmospheric calm', cameraStyle: 'slow orbit or crane shot', motionIntensity: 0.15, keywords: ['dreamy', 'reverb-visual', 'soft focus', 'space'] },
+        bridge: { aesthetic: 'transitional transformation', cameraStyle: 'whip pan or morph', motionIntensity: 0.5, keywords: ['color shift', 'perspective change', 'metamorphosis'] },
+        outro: { aesthetic: 'fading resolution', cameraStyle: 'slow pull back', motionIntensity: 0.1, keywords: ['fade', 'dissolve', 'peaceful', 'closing'] },
+      };
+
+      const GENRE_WORLDS: Record<string, { world: string; colorPalette: string; keywords: string[] }> = {
+        'melodic-techno': { world: 'vast desert landscapes and futuristic architecture', colorPalette: 'amber, deep blue, warm white, bronze', keywords: ['architectural', 'geometric', 'vast scale'] },
+        'afro-tech': { world: 'vibrant African-futurism city with organic technology', colorPalette: 'earth tones, gold, emerald green, sunset orange', keywords: ['organic', 'rhythmic patterns', 'cultural motifs'] },
+        'jersey-club': { world: 'neon-lit urban nightscape with dance floor energy', colorPalette: 'electric purple, hot pink, chrome, black', keywords: ['urban', 'dance', 'dynamic', 'bounce'] },
+        'space-bass': { world: 'deep space nebulae and alien crystalline structures', colorPalette: 'deep purple, cyan, magenta, void black', keywords: ['cosmic', 'alien', 'liquid', 'fractal'] },
+        'pop-edm': { world: 'glossy festival stage with LED walls and confetti', colorPalette: 'rainbow spectrum, white, gold sparkle', keywords: ['festival', 'euphoric', 'crowd', 'lights'] },
+      };
+
+      const genreWorld = genre && GENRE_WORLDS[genre]
+        ? GENRE_WORLDS[genre]
+        : { world: 'abstract digital landscape with flowing light', colorPalette: 'electric blue, deep purple, white, silver', keywords: ['abstract', 'digital', 'light'] };
+
+      const segments = [];
+      for (let i = 0; i < analysis.sections.length; i++) {
+        const section = analysis.sections[i];
+        const sectionType = section.type as string;
+        const defaults = SECTION_STYLES[sectionType] || SECTION_STYLES.verse;
+        const transition = analysis.transitions?.find((t: Record<string, unknown>) => t.fromSection === section.id);
+
+        const maxClipDuration = 10;
+        const sectionDuration = typeof section.duration === 'string'
+          ? parseFloat(section.duration)
+          : section.duration;
+        const clipCount = Math.ceil(sectionDuration / maxClipDuration);
+
+        for (let c = 0; c < clipCount; c++) {
+          const sectionStart = typeof section.startTime === 'string'
+            ? parseFloat(section.startTime)
+            : section.startTime;
+          const clipStart = sectionStart + (c * sectionDuration / clipCount);
+          const clipDuration = Math.min(sectionDuration / clipCount, maxClipDuration);
+          const arcPosition = i / Math.max(analysis.sections.length - 1, 1);
+          const narrativePhase = arcPosition < 0.2 ? 'opening' : arcPosition < 0.5 ? 'rising action' : arcPosition < 0.75 ? 'climax' : 'resolution';
+
+          const prompt = [
+            `Cinematic ${defaults.aesthetic}.`,
+            `Theme: ${narrativeTheme}, ${narrativePhase} moment in ${genreWorld.world}.`,
+            `Color palette: ${genreWorld.colorPalette}.`,
+            `Camera: ${defaults.cameraStyle}.`,
+            `Energy: ${section.energy > 0.7 ? 'explosive, maximum intensity' : section.energy > 0.4 ? 'moderate energy, flowing motion' : 'calm, gentle movement'}.`,
+            `Style: ${[...defaults.keywords, ...genreWorld.keywords].join(', ')}.`,
+            `Motion intensity: ${Math.round(defaults.motionIntensity * 100)}%.`,
+            'Cinematic quality, 24fps filmic motion, professional color grading.',
+          ].join(' ');
+
+          segments.push({
+            id: `seg-${section.id}-${c}`,
+            sectionId: section.id,
+            sectionType,
+            startTime: Math.round(clipStart * 1000) / 1000,
+            duration: Math.round(clipDuration * 1000) / 1000,
+            prompt,
+            outTransition: c === clipCount - 1 && transition ? transition.type : null,
+          });
+        }
+      }
+
+      return textResult(JSON.stringify({
+        plan: {
+          theme: narrativeTheme,
+          genre: genre || 'generic',
+          totalSegments: segments.length,
+          totalDuration: `${Math.round(analysis.duration || analysis.sections.reduce((s: number, sec: Record<string, unknown>) => s + (typeof sec.duration === 'string' ? parseFloat(sec.duration as string) : sec.duration as number), 0))}s`,
+        },
+        segments,
+      }, null, 2));
+    } catch (err) {
+      return textResult(`Error planning video: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  'export_audio_from_ableton',
+  'Export the current Ableton Live session as a WAV file for video generation analysis. Renders the master output to a file.',
+  {
+    outputPath: z.string().describe('File path to save the exported WAV'),
+    startBar: z.number().default(1).describe('Start bar for export'),
+    endBar: z.number().optional().describe('End bar for export (omit for full song)'),
+  },
+  async ({ outputPath, startBar, endBar }) => {
+    try {
+      let resolvedEndBar = endBar;
+      if (!resolvedEndBar) {
+        const songInfo = await sendToAbleton({ type: 'get_song_info' }) as Record<string, unknown>;
+        resolvedEndBar = (songInfo.song_length as number) || 64;
+      }
+
+      await sendToAbleton({
+        type: 'export_audio',
+        params: {
+          output_path: outputPath,
+          start_bar: startBar,
+          end_bar: resolvedEndBar,
+        },
+      });
+
+      return textResult(
+        `Audio exported to ${outputPath} (bars ${startBar}-${resolvedEndBar}). ` +
+        `Ready for analyze_song_structure.`,
+      );
+    } catch (err) {
+      return textResult(`Ableton export error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
 // ── Start server ─────────────────────────────────────────────────────
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Hum-to-MIDI MCP server v1.1.0 running on stdio');
+  console.error('Hum-to-MIDI MCP server v1.2.0 running on stdio (with video generation)');
 }
 
 main().catch(console.error);
