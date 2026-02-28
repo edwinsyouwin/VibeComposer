@@ -3,6 +3,10 @@
     "AbletonMCP": {
       "command": "uvx",
       "args": ["ableton-mcp"]
+    },
+    "DSP-MCP": {
+      "command": "uv",
+      "args": ["run", "--directory", "packages/dsp-mcp", "dsp-mcp"]
     }
   }
 }
